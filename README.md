@@ -4,7 +4,8 @@
 
 ![Terraform](https://img.shields.io/badge/Terraform-1.10%2B-7B42BC?logo=terraform&logoColor=white)
 ![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
-![AWS](https://img.shields.io/badge/AWS-Lambda%20%7C%20DynamoDB%20%7C%20EventBridge%20%7C%20SES-232F3E?logo=amazonaws&logoColor=white)
+![AWS](https://img.shields.io/badge/AWS-Lambda%20%7C%20DynamoDB%20%7C%20EventBridge%20%7C%20SES-FF9900)
+![Region](https://img.shields.io/badge/region-ap--south--2-232F3E)
 ![CI](https://img.shields.io/badge/CI-GitHub%20Actions%20%2B%20OIDC-2088FF?logo=githubactions&logoColor=white)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
@@ -22,53 +23,105 @@ Fixed start/stop schedules don't solve this. They either kill something someone 
 
 ---
 
-## How it works
+## Architecture
 
-<table>
-  <tr>
-    <td align="center" width="19%"><img src="docs/icons/eventbridge.svg" width="46" alt="Amazon EventBridge"><br><sub><b>EventBridge</b><br>the 30-minute tick</sub></td>
-    <td align="center" width="19%"><img src="docs/icons/lambda.svg" width="46" alt="AWS Lambda"><br><sub><b>Lambda</b><br>all decision logic</sub></td>
-    <td align="center" width="19%"><img src="docs/icons/cloudwatch.svg" width="46" alt="Amazon CloudWatch"><br><sub><b>CloudWatch</b><br>idleness signals</sub></td>
-    <td align="center" width="19%"><img src="docs/icons/dynamodb.svg" width="46" alt="Amazon DynamoDB"><br><sub><b>DynamoDB</b><br>lifecycle state</sub></td>
-    <td align="center" width="19%"><img src="docs/icons/ses.svg" width="46" alt="Amazon SES"><br><sub><b>SES</b><br>warning emails</sub></td>
-  </tr>
-  <tr>
-    <td align="center"><img src="docs/icons/ec2.svg" width="46" alt="Amazon EC2"><br><sub><b>EC2</b><br>StopInstances</sub></td>
-    <td align="center"><img src="docs/icons/rds.svg" width="46" alt="Amazon RDS"><br><sub><b>RDS / Aurora</b><br>StopDBInstance<br>StopDBCluster</sub></td>
-    <td align="center"><img src="docs/icons/sqs.svg" width="46" alt="Amazon SQS"><br><sub><b>SQS</b><br>dead letter queue</sub></td>
-    <td align="center"><img src="docs/icons/iam.svg" width="46" alt="AWS IAM"><br><sub><b>IAM</b><br>OIDC + scoped ARNs</sub></td>
-    <td align="center"><img src="docs/icons/s3.svg" width="46" alt="Amazon S3"><br><sub><b>S3</b><br>Terraform state</sub></td>
-  </tr>
-</table>
+Two planes, deliberately separated. **GitHub Actions deploys and nothing else** — it holds no standing permission to stop a resource. **Everything with a timer runs inside AWS**, where the schedule is durable and the state survives between runs.
 
 ```mermaid
 flowchart TB
-    subgraph deploy["DEPLOYMENT PLANE"]
-        direction LR
-        DEV["Developer<br/>pull request"] --> GHA["GitHub Actions<br/>plan / apply"]
-        GHA --> OIDC["IAM role via OIDC<br/>no static keys"]
+    subgraph deploy["DEPLOYMENT"]
+        GHA["GitHub Actions<br/>terraform plan and apply"] --> OIDC["IAM via OIDC<br/>no static keys"]
+        GHA --> S3[("S3<br/>Terraform state")]
     end
 
-    subgraph runtime["RUNTIME PLANE — every 30 minutes"]
-        EB["EventBridge<br/>cron(0/30 * * * ? *)"] --> LAM["Reaper Lambda<br/>Python 3.12, arm64"]
-        CW["CloudWatch<br/>GetMetricData, batched"] -- metrics --> LAM
-        LAM <-- state --> DDB[("DynamoDB<br/>lifecycle state")]
-        LAM --> SES["Amazon SES<br/>warning emails"]
-        LAM --> RES["EC2 / Aurora / RDS<br/>stopped when unclaimed"]
+    OIDC ==>|"provisions everything below"| EB
+
+    subgraph runtime["RUNTIME"]
+        EB["EventBridge<br/>every 30 minutes"] --> LAM["Lambda<br/>evaluate and decide"]
+        LAM <-->|"read / write"| DDB[("DynamoDB<br/>resource config and state")]
+        LAM -->|"warning email"| SES["SES"]
+        LAM <==>|"read metrics · stop when idle"| RES["AWS resources<br/>EC2, Aurora, RDS"]
     end
 
-    OIDC -. provisions .-> EB
+    ENG["Engineer"] -->|"snooze or adjust expectations"| DDB
+
+    classDef svc fill:#FDE7F1,stroke:#E7157B,stroke-width:2px,color:#1A1A1A
+    classDef compute fill:#FFF1E3,stroke:#ED7100,stroke-width:2px,color:#1A1A1A
+    classDef data fill:#E9EEFF,stroke:#527FFF,stroke-width:2px,color:#1A1A1A
+    classDef ext fill:#F1F3F5,stroke:#57606A,stroke-width:2px,color:#1A1A1A
+
+    class LAM,RES compute
+    class DDB,S3 data
+    class EB,SES svc
+    class OIDC,GHA,ENG ext
+
+    style deploy fill:#FBFCFD,stroke:#8C959F,stroke-width:1px,color:#1A1A1A
+    style runtime fill:#FBFCFD,stroke:#8C959F,stroke-width:1px,color:#1A1A1A
 ```
 
-> 📐 **Full AWS architecture diagram:** [`docs/architecture.drawio`](docs/architecture.drawio) — official AWS architecture icons, editable in [diagrams.net](https://app.diagrams.net) or the draw.io VS Code extension. Deployed to a single account in **`ap-south-2` (Hyderabad)**.
+The Lambda's IAM policy names the managed resource ARNs explicitly. A logic bug cannot reach anything outside that list — IAM refuses the call before the code gets a say.
+
+> **The detailed version lives in [`architecture.drawio`](architecture.drawio)** — official AWS architecture icons, every service and IAM boundary drawn out, editable in [diagrams.net](https://app.diagrams.net) or the draw.io VS Code extension. The diagram above is the same system with the detail stripped out. Deployed to a single account in **`ap-south-2` (Hyderabad)**.
+
+---
+
+## How it works
 
 Every 30 minutes a single Lambda describes the managed resources, pulls their CloudWatch metrics in one batched call, and compares the result against lifecycle state held in DynamoDB.
 
-| Time | What happens | State |
-|---|---|---|
-| T+0 | Idle detected → first warning email | `WARNED_1` |
-| T+30m | Still idle → second warning, marked urgent | `WARNED_2` |
-| T+60m | Still idle → resource stopped | `STOPPED` |
+### One tick, end to end
+
+```mermaid
+flowchart LR
+    A["EventBridge tick<br/>describe resources"] --> B{"exempt<br/>or snoozed?"}
+    B -->|no| C{"too<br/>young?"}
+    C -->|no| D["GetMetricData<br/>4h lookback"]
+    D --> E{"enough<br/>datapoints?"}
+    E -->|yes| F{"all signals<br/>below<br/>threshold?"}
+    F -->|yes| G{"state<br/>row?"}
+    G -->|none| W1["WARNED_1<br/>first warning"]
+    G -->|"WARNED_1<br/>30 min ago"| W2["WARNED_2<br/>urgent warning"]
+    G -->|"WARNED_2<br/>30 min ago"| H{"dry_run?"}
+    H -->|false| STOP["Stop the resource<br/>record audit trail"]
+    H -->|"true<br/>(default)"| LOG["Log the decision<br/>no API call"]
+
+    B -->|yes| SKIP["Skip<br/>no state change"]
+    C -->|yes| SKIP
+    E -->|"no — unknown,<br/>not idle"| SKIP
+    F -->|no| RESET["Delete state row<br/>countdown resets"]
+
+    classDef guard fill:#FCE4E7,stroke:#DD344C,stroke-width:2px,color:#1A1A1A
+    classDef act fill:#FFF1E3,stroke:#ED7100,stroke-width:2px,color:#1A1A1A
+    classDef calm fill:#EFF4DD,stroke:#7AA116,stroke-width:2px,color:#1A1A1A
+    classDef step fill:#F1F3F5,stroke:#57606A,stroke-width:2px,color:#1A1A1A
+
+    class B,C,E,F,G,H guard
+    class W1,W2,STOP act
+    class SKIP,RESET,LOG calm
+    class A,D step
+```
+
+Four of those diamonds exist purely to avoid false positives, and two are worth calling out. The datapoint check comes before any threshold comparison: `GetMetricData` returns an empty array for a metric that isn't publishing, and treating that as `0` would stop a perfectly healthy database. The threshold check combines signals with **AND, never OR** — a resource has to look idle by *every* measure before the countdown starts.
+
+### The escalation lifecycle
+
+```mermaid
+stateDiagram-v2
+    direction LR
+    [*] --> ACTIVE
+    ACTIVE --> WARNED_1 : T+0 · idle detected, first email
+    WARNED_1 --> WARNED_2 : T+30m · still idle, marked urgent
+    WARNED_2 --> STOPPED : T+60m · still idle, resource stopped
+    WARNED_1 --> ACTIVE : activity detected, row deleted
+    WARNED_2 --> ACTIVE : activity detected, row deleted
+    STOPPED --> [*] : restart is always a human action
+
+    note right of ACTIVE
+        No DynamoDB row exists in this state.
+        Exempt, snoozed, newly launched and
+        low-datapoint resources stay here.
+    end note
+```
 
 If the owner comes back and uses the resource at any point, the metrics reflect it on the next tick, the state row is deleted, and the countdown resets. **They never have to know this system exists.**
 
@@ -280,10 +333,7 @@ Catching one forgotten `m5.xlarge` a single time pays for the system for over a 
 │   ├── handlers/           # ec2.py, aurora.py, rds.py
 │   ├── evaluation.py       # idleness logic — pure functions
 │   └── tests/
-├── docs/
-│   ├── design.md           # full design document
-│   ├── architecture.drawio # AWS architecture diagram, official icons
-│   └── icons/              # AWS service icons used above
+├── architecture.drawio     # AWS architecture diagram, official icons
 └── .github/workflows/      # plan.yml, apply.yml
 ```
 
