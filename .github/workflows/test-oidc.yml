@@ -13,10 +13,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
       - name: Configure AWS Creds
-        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502
+        uses: aws-actions/configure-aws-credentials@4
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           role-session-name: AnySessionName
           aws-region: ${{ vars.AWS_REGION }}
+          manage-session-tags: false
       - name: Sts GetCallerIdentity
         run: aws sts get-caller-identity
