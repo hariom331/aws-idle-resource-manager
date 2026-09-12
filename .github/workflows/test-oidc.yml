@@ -11,13 +11,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
       - name: Configure AWS Creds
         uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
-          role-session-name: GitHub_to_AWS_via_FederatedOIDC
+          role-session-name: AnySessionName
           aws-region: ${{ vars.AWS_REGION }}
       - name: Sts GetCallerIdentity
-        run: |
-          aws sts get-caller-identity
+        run: aws sts get-caller-identity
