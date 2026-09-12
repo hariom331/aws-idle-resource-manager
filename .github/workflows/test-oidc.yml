@@ -1,4 +1,4 @@
-name:OIDC Test
+name: OIDC Test
 on:
   push:
     branches: [ terraform-s3-oidc-setup ]
