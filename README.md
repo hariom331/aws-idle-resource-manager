@@ -138,7 +138,6 @@ If the owner comes back and uses the resource at any point, the metrics reflect 
 | **Distributed systems fundamentals** | At-least-once delivery handled with conditional writes and reserved concurrency; idempotency treated as a design requirement, not an afterthought |
 | **Production judgement** | Dry-run by default, a five-phase rollout that observes before it enforces, self-monitoring alarms, a dead letter queue, and a written operational runbook |
 | **Cost engineering** | A cost model derived from actual AWS billing units, including a deliberate decision *not* to optimise something that turned out to be free |
-| **Testing** | Decision logic written as pure functions with no AWS calls, so the bulk of the suite runs in CI with `pytest` + `moto` and no live account |
 | **Technical writing** | A full design document covering goals, non-goals, rejected alternatives, data model, IAM, rollout and runbook |
 
 ---
@@ -151,7 +150,7 @@ The parts that took the most thought, and the reasons behind them.
 
 `GetMetricData` returns an empty array when a metric isn't publishing — a resource that just launched, or one without detailed monitoring. A naive `avg(cpu) < 5` check treats that as `0` and stops a perfectly healthy database.
 
-Every evaluation asserts a minimum datapoint count first and treats anything below it as *unknown*, not *idle*. This is the single most likely cause of a false shutdown and the first thing I built a test for.
+Every evaluation asserts a minimum datapoint count first and treats anything below it as *unknown*, not *idle*. This is the single most likely cause of a false shutdown.
 
 ### Three services, three different shutdown verbs
 
@@ -221,7 +220,6 @@ Termination is never automated. The system stops resources and nothing else; bri
 | State | DynamoDB on-demand | TTL handles cleanup, no capacity planning |
 | Email | Amazon SES | Domain identity, HTML templates. Called via the `SendEmail` API — `ap-south-2` has no SES SMTP endpoint, which the design doesn't need |
 | Region | `ap-south-2` (Hyderabad) | Single account; every service in the stack is available there |
-| Testing | pytest + moto | Mocked AWS, no live account needed for CI |
 
 ---
 
@@ -297,18 +295,6 @@ Thresholds are provisional by design. The rollout plan replaces them with measur
 
 ---
 
-## Testing
-
-```bash
-pip install -r requirements-dev.txt
-pytest                        # unit tests, moto-mocked AWS
-pytest -m integration         # against a real account, requires credentials
-```
-
-The idleness evaluation and decision logic are pure functions with no AWS calls, so the bulk of the test suite runs without any account access. Edge cases covered include empty metric responses, resources younger than the lookback window, partial metric availability, and duplicate invocation handling.
-
----
-
 ## Cost
 
 Running against six resources: **under $1/month**, almost all of it CloudWatch `GetMetricData` at $0.01 per 1,000 metrics requested.
@@ -331,8 +317,7 @@ Catching one forgotten `m5.xlarge` a single time pays for the system for over a 
 ├── lambda/
 │   ├── handler.py          # main loop
 │   ├── handlers/           # ec2.py, aurora.py, rds.py
-│   ├── evaluation.py       # idleness logic — pure functions
-│   └── tests/
+│   └── evaluation.py       # idleness logic — pure functions
 ├── architecture.drawio     # AWS architecture diagram, official icons
 └── .github/workflows/      # plan.yml, apply.yml
 ```
