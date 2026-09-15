@@ -1,0 +1,52 @@
+name: Deploy
+
+on:
+  push:
+    branches: [ architecture-components ]
+    paths:
+      - "*.tf"
+      - ".terraform.lock.hcl"
+      - "modules/**"
+      - ".github/workflows/deploy.yml"
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency: deploy
+
+env:
+  STATE_BUCKET: terraform-state-s3-${{ vars.AWS_ACCT_ID }}
+  TF_VAR_account_id: ${{ vars.AWS_ACCT_ID }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Creds
+        uses: aws-actions/configure-aws-credentials@v4.1.0
+        with:
+          role-to-assume: ${{ vars.AWS_OIDC_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.15.8
+          terraform_wrapper: false
+
+      - name: Terraform fmt
+        run: terraform fmt -check -recursive
+
+      - name: Terraform init
+        run: terraform init -backend-config="bucket=$STATE_BUCKET"
+
+      - name: Terraform plan
+        run: terraform plan -out=tfplan
+
+      - name: Terraform apply
+        run: terraform apply -auto-approve tfplan

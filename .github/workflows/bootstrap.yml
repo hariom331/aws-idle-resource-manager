@@ -1,0 +1,75 @@
+name: Bootstrap
+
+on:
+  push:
+    branches: [ architecture-components ]
+    paths:
+      - "bootstrap/**"
+      - ".github/workflows/bootstrap.yml"
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency: bootstrap
+
+env:
+  STATE_BUCKET: terraform-state-s3-${{ vars.AWS_ACCT_ID }}
+  TF_VAR_account_id: ${{ vars.AWS_ACCT_ID }}
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: bootstrap
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Creds
+        uses: aws-actions/configure-aws-credentials@v4.1.0
+        with:
+          role-to-assume: ${{ vars.AWS_OIDC_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.15.8
+          terraform_wrapper: false
+
+      - name: Terraform fmt
+        run: terraform fmt -check
+
+      - name: Check state bucket
+        id: bucket
+        run: |
+          if aws s3api head-bucket --bucket "$STATE_BUCKET" 2>/dev/null; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # bucket doesn't exist yet: apply with local state, then move the state into the bucket
+      - name: First run
+        if: steps.bucket.outputs.exists == 'false'
+        run: |
+          mv backend.tf backend.tf.bak
+          terraform init
+          terraform apply -auto-approve
+          mv backend.tf.bak backend.tf
+          terraform init -migrate-state -force-copy -backend-config="bucket=$STATE_BUCKET"
+
+      - name: Terraform init
+        if: steps.bucket.outputs.exists == 'true'
+        run: terraform init -backend-config="bucket=$STATE_BUCKET"
+
+      - name: Terraform plan
+        if: steps.bucket.outputs.exists == 'true'
+        run: terraform plan -out=tfplan
+
+      - name: Terraform apply
+        if: steps.bucket.outputs.exists == 'true'
+        run: terraform apply -auto-approve tfplan
