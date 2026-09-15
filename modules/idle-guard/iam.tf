@@ -33,6 +33,24 @@ data "aws_iam_policy_document" "lambda" {
     actions   = ["cloudwatch:GetMetricData", "ec2:DescribeInstances", "rds:DescribeDBInstances", "rds:DescribeDBClusters"]
     resources = ["*"]
   }
+
+  statement {
+    sid       = "StopTaggedOnly"
+    actions   = ["ec2:StopInstances"]
+    resources = ["arn:aws:ec2:${var.region}:${var.account_id}:instance/*"]
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:ResourceTag/idle-guard:autostop"
+      values   = ["TRUE"]
+    }
+  }
+
+  statement {
+    sid       = "DeadLetterQueue"
+    actions   = ["sqs:SendMessage"]
+    resources = [aws_sqs_queue.dlq.arn]
+  }
 }
 
 resource "aws_iam_role_policy" "lambda" {
