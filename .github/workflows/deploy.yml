@@ -1,6 +1,13 @@
 name: Deploy
 
 on:
+  push:
+    branches: [ architecture-components ]
+    paths:
+      - "*.tf"
+      - ".terraform.lock.hcl"
+      - "modules/**"
+      - ".github/workflows/deploy.yml"
   workflow_dispatch:
 
 permissions:
